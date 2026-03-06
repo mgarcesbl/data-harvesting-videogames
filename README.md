@@ -2,7 +2,7 @@
 
 ## 📋 Project Overview
 
-This project combines **dynamic web scraping** and **API data enrichment** to analyze the relationship between game discounts on Steam and their critical reception (Metacritic scores). We extracted data from 500 games across different sorting methods to identify "hidden gems"—high-quality games with significant discounts.
+This project combines **dynamic web scraping** and **API data enrichment** to analyze the relationship between game discounts on Steam and their critical reception (Metacritic scores). We extracted data from 500 games across different sorting methods to identify "hidden gems"high-quality games with significant discounts.
 
 ## 🛠️ Technical Stack
 
