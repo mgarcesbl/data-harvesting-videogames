@@ -1,10 +1,10 @@
 # 🎮 Steam Deals & Quality Analysis (RAWG API)
 
-## 📋 Project Overview
+## Project Overview
 
 This project combines **dynamic web scraping** and **API data enrichment** to analyze the relationship between game discounts on Steam and their critical reception (Metacritic scores). We extracted data from 500 games across different sorting methods to identify "hidden gems"high-quality games with significant discounts.
 
-## 🛠️ Technical Stack
+## Technical Stack
 
 -   **Web Scraping:** `selenium` for handling infinite scroll and dynamic content on Steam.
 -   **API Integration:** `httr2` and `jsonlite` to communicate with the **RAWG API**.
@@ -46,7 +46,7 @@ This project has been consolidated into a single, automated pipeline for ease of
 
 ---
 
-### 📁 Project Structure & Output
+### Project Structure & Output
 
 | File | Description |
 | :--- | :--- |
@@ -56,7 +56,7 @@ This project has been consolidated into a single, automated pipeline for ease of
 
 ---
 
-### 💡 Key Technical Solutions
+### Key Technical Solutions
 
 * **Dynamic Scraping**: We implemented a `while` loop with JavaScript execution (`window.scrollTo`) to bypass Steam's infinite scroll and successfully reach the 500-game target.
 * **Regex Normalization**: Steam titles are "noisy" (e.g., "Game Name™ (Special Edition)"). We built a **normalization pipeline** using `gsub()` and `trimws()` to strip symbols and subtitles, increasing our API match success rate significantly.
