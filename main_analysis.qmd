@@ -1,0 +1,446 @@
+---
+title: "Scraping_steam_V1_20260302"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+# Scraping Steam
+
+## Setup
+
+### Libraries
+
+```{r}
+# Scraping
+library(selenium)
+library(scrapex)
+library(xml2)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(DataExplorer) # plot_intro, plot_missing
+# API
+library(httr2)
+library(jsonlite)
+library(ggplot2)
+```
+
+### Scrape function
+This is a function that takes ANY steam search URL (hopefully, after much trial and error!) and returns the scraped data.
+```{r}
+
+harvest_steam_page <- function(url, target_games = 500) {
+  
+  # Navigate to the provided URL [cite: 7]
+  driver$navigate(url)
+  Sys.sleep(3)
+  
+  current_game_count <- 0
+  previous_game_count <- -1
+  
+  # Scroll loop
+  while(current_game_count < target_games && current_game_count > previous_game_count) {
+    previous_game_count <- current_game_count
+    driver$execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    Sys.sleep(2) 
+    
+    page_source <- driver$get_page_source() 
+    
+    current_game_count <- page_source |>
+      read_html() |>
+      xml_find_all("//a[contains(@class, 'search_result_row')]") |>
+      length()
+  }
+  
+  # Parse the HTML
+  html_code <- page_source |> read_html()
+  game_rows <- html_code |> xml_find_all("//a[contains(@class, 'search_result_row')]")
+  
+  safe_extract <- function(node, xpath) {
+    element <- xml_find_first(node, xpath)
+    if (is.na(element)) return(NA_character_)
+    element |> xml_text() |> trimws()
+  }
+  
+  # Build and return the tibble
+  tibble(
+    title = sapply(game_rows, safe_extract, ".//span[@class='title']"),
+    release_date = sapply(game_rows, safe_extract, ".//div[contains(@class, 'search_released')]"),
+    discount_pct = sapply(game_rows, safe_extract, ".//div[contains(@class, 'discount_pct')]"),
+    original_price = sapply(game_rows, safe_extract, ".//div[contains(@class, 'discount_original_price')] | .//strike"),
+    current_price = sapply(game_rows, safe_extract, ".//div[contains(@class, 'discount_final_price')]")
+  )
+}
+
+```
+
+### Clean function
+Cleaning Function - should take a raw steam dataframe and format the numeric columns
+
+```{r}
+clean_steam_prices <- function(df) {
+  df |>
+    mutate(
+      # dmy() parses the text and strictly returns a Date object
+      release_date = dmy(release_date),
+      # Remove '-' and '%' from discount, convert to numeric
+      discount_pct = as.numeric(str_replace_all(discount_pct, "[-%]", "")),
+      
+      # Remove '€', replace ',' with '.', convert to numeric
+      original_price = as.numeric(str_replace_all(original_price, "[€]", "") |> str_replace(",", ".")),
+      current_price = as.numeric(str_replace_all(current_price, "[€]", "") |> str_replace(",", "."))
+    )
+}
+
+# 2. Scalable Imputation Function - should fix missing data
+impute_game_discount <- function(df, target_title, known_discount) {
+  df |>
+    mutate(
+      discount_pct = ifelse(title == target_title, known_discount, discount_pct),
+      original_price = ifelse(
+        title == target_title, 
+        current_price / (1 - discount_pct / 100), 
+        original_price
+      )
+    )
+}
+
+```
+
+### Validate function
+Scaleable Validation Function - identifies rows where the maths is incorrect (we include a tolerance as we saw sales etc. that changed the prices a lot)
+
+```{r}
+validate_price_math <- function(df, tolerance = 0.05) {
+  df |>
+    mutate(
+      expected_price = round(original_price * (1 - discount_pct / 100), 2),
+      price_difference = abs(current_price - expected_price)
+    ) |>
+    # Return ONLY the rows that fail the validation check
+    filter(price_difference > tolerance)
+}
+```
+
+## Scrape
+
+### Start server and browser
+
+```{r}
+# Start the Selenium server (temp = FALSE keeps it across sessions)
+server <- selenium_server(temp = FALSE)
+wait_for_server(server)
+
+# Open a browser session (defaults to Firefox)
+driver <- SeleniumSession$new()
+
+```
+
+### Calling the functions
+
+```{r}
+# 1. Define URLs
+relevance_link <- "https://store.steampowered.com/search/?specials=1"
+reviews_link <- "https://store.steampowered.com/search/?sort_by=Reviews_DESC&supportedlang=english&specials=1&ndl=1"
+release_date_link<- "https://store.steampowered.com/search/?sort_by=Released_DESC&supportedlang=english&specials=1&ndl=1"
+
+# 2. Harvest pages
+raw_relevance <- harvest_steam_page(relevance_link, target_games = 500) |> 
+  mutate(sort_method = "Relevance")
+
+raw_reviews <- harvest_steam_page(reviews_link, target_games = 500) |>
+  mutate(sort_method = "User Reviews")
+
+raw_release_date <- harvest_steam_page(release_date_link, target_games = 500) |>
+  mutate(sort_method = "Release date")
+
+# 3. Clean results
+clean_relevance <- raw_relevance |>
+  clean_steam_prices() |>
+  impute_game_discount(target_title = "NBA 2K26", known_discount = 71)
+
+clean_reviews <- raw_reviews |>
+  clean_steam_prices()
+
+clean_release_date <- raw_release_date |>
+  clean_steam_prices()
+
+View(clean_relevance)
+View(clean_reviews)
+View(clean_release_date)
+
+```
+
+### Close browser and stop server
+
+```{r}
+driver$close()
+server$kill()
+```
+
+## Results
+
+### Check inconsistencies / Missing Values
+
+```{r}
+clean_relevance |>
+  validate_price_math(tolerance = 0.05)
+
+clean_reviews |>
+  validate_price_math(tolerance = 0.05)
+
+clean_release_date |>
+  validate_price_math(tolerance = 0.05)
+```
+
+```{r}
+plot_intro(clean_relevance)
+plot_intro(clean_reviews)
+plot_intro(clean_release_date)
+```
+
+### Write csv
+
+```{r}
+write_csv(clean_relevance, file = "clean_relevance.csv")
+write_csv(clean_reviews, file = "clean_reviews.csv")
+write_csv(clean_release_date, file = "clean_release_date.csv")
+```
+
+# API Integration
+
+We store the API key in a local .txt file to ensure it's not pushed to the GitHub repository, following security best practices. The .gitignore file has been configured to exclude 'api_key.txt'.
+
+```{r}
+if (!file.exists("api_key.txt")) {
+  stop("REPRODUCIBILITY ERROR: 'api_key.txt' not found. Please create this file 
+       in the root directory and paste your RAWG API key to proceed.")
+}
+
+key <- readLines("api_key.txt", warn = FALSE)
+
+
+# Loading dataset generated in the Scraping phase
+steam_data <- read.csv("clean_reviews.csv")
+
+# Check column types and distribution
+summary(steam_data)
+```
+
+Although we performed an initial cleaning of names and prices during the scraping above, Steam titles remained "noisy" for external API integration.
+
+Many titles still contained trademarks (™), regional subtitles, or localised translations (e.g., "Valiant Hearts / Soldats Inconnus") that prevented exact matches in the RAWG database. Without this secondary normalization layer, our API match would have been significantly lower, leading to a data loss of nearly 60%. This layer ensures inter-operability between two different data sources (and proves we love R!).
+
+## Data Diagnostics & String Normalisation
+
+```{r}
+# Find special characters and symbols that cause errors
+symbol_count <- sum(grepl("™|®|\\(|\\)", steam_data$title))
+print(paste("Number of titles requiring advanced normalization:", symbol_count))
+
+# Regex to tidy
+steam_data <- steam_data %>%
+  mutate(title_search = title %>%
+    gsub("™|®", "", .) %>%
+    gsub("\\(.*\\)", "", .) %>%
+    gsub("/.*", "", .) %>%
+    gsub(":.*", "", .) %>%
+    gsub(" - .*", "", .) %>%
+    trimws()
+  )
+
+```
+
+## API Enrichment Function
+This function connects to the RAWG API to retrieve the Metacritic score and Genre.
+
+We decided to implement a "Best Match" kind of logic to avoid DLC or Soundtracks without scores (there were a few strange matches).
+
+```{r}
+get_metacritic <- function(game_name, api_key) {
+  
+  # remove non-alphanumeric characters
+  query_clean <- gsub("[^[:alnum:] ]", " ", game_name)
+  query_clean <- trimws(gsub("\\s+", " ", query_clean))
+  query_url <- URLencode(query_clean)
+  
+  url <- paste0("https://api.rawg.io/api/games?key=", api_key, "&search=", query_url)
+  
+  tryCatch({
+    resp <- request(url) %>% req_perform()
+    data <- resp %>% resp_body_json(simplifyVector = TRUE)
+    
+    if (length(data$results) > 0) {
+      res <- data$results
+      # Check if the metacritic column exists and filter for the first entry with a valid score
+      if ("metacritic" %in% names(res)) {
+        valid_match <- res[!is.na(res$metacritic), ]
+        if (nrow(valid_match) > 0) {
+          return(data.frame(
+            metacritic = valid_match$metacritic[1],
+            genre = valid_match$genres[[1]]$name[1],
+            stringsAsFactors = FALSE
+          ))
+        }
+      }
+    }
+    # Return NA if no match with a score is found
+    return(data.frame(metacritic = NA, genre = "Unknown", stringsAsFactors = FALSE))
+  }, error = function(e) return(data.frame(metacritic = NA, genre = "Unknown")))
+}
+```
+
+## Execution and Data Quality Audit
+
+```{r}
+print("Starting API Enrichment... This may take a few minutes for 500 records.")
+
+# Iterating through the cleaned titles using lapply
+api_list <- lapply(steam_data$title_search, get_metacritic, api_key = key)
+
+# Put the results into a data frame
+api_results <- do.call(rbind, api_list)
+
+# Merging frame with the original Steam data set
+final_table <- cbind(steam_data, api_results)
+
+# Check the number of successfully retrieved scores
+na_count <- sum(is.na(final_table$metacritic))
+success_rate <- round((1 - (na_count / nrow(final_table))) * 100, 2)
+
+print(paste("Data Enrichment Success Rate:", success_rate, "%"))
+print(paste("Total titles with Metacritic scores retrieved:", nrow(final_table) - na_count))
+```
+
+## Export Final Dataset
+
+```{r}
+# Exporting the enriched dataset for visualization and reporting
+write.csv(final_table, "final_data_steam_rawg.csv", row.names = FALSE)
+```
+
+## Data Visualisation and Statistical Analysis
+
+### Visualisation
+
+```{r}
+# Filtering data to include only games with a valid Metacritic score
+df_plot <- final_table %>% filter(!is.na(metacritic))
+
+# 1. Statistical Correlation
+# We calculate the Pearson correlation to see if higher discounts relate to lower quality.
+correlation_value <- cor(df_plot$discount_pct, df_plot$metacritic, use = "complete.obs")
+print(paste("Pearson Correlation (Quality vs Discount):", round(correlation_value, 3)))
+
+# 2. Scatter Plot: Quality vs. Discount
+# This graph helps identify if "hidden gems" (high score, high discount) exist.
+ggplot(df_plot, aes(x = discount_pct, y = metacritic)) +
+  geom_point(aes(color = genre), size = 3, alpha = 0.6) +
+  geom_smooth(method = "lm", color = "black", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Game Quality vs. Discount Percentage",
+    x = "Discount (%)",
+    y = "Metacritic Score",
+    color = "Genre"
+  ) +
+  facet_wrap(~genre)
+
+# 3. Bar Chart: Average Quality by Genre
+# Useful for identifying which genres currently have the best-rated deals.
+df_genre <- df_plot %>% 
+  group_by(genre) %>% 
+  summarise(avg_score = mean(metacritic), count = n()) %>%
+  filter(count > 2) %>% # Filtering small samples for better reliability
+  arrange(desc(avg_score))
+
+ggplot(df_genre, aes(x = reorder(genre, avg_score), y = avg_score, fill = genre)) +
+  geom_col() +
+  coord_flip() +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  labs(
+    title = "Average Metacritic Score by Genre",
+    x = "Genre",
+    y = "Mean Score"
+  )
+
+# 4. Histogram: Discount Distribution
+# A general overview of the Steam sales landscape.
+ggplot(final_table, aes(x = discount_pct)) +
+  geom_histogram(fill = "#5DADE2", bins = 20, color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Discounts across Top 500 Games",
+    x = "Discount (%)",
+    y = "Number of Games"
+  )
+```
+
+### Quality vs Value analysis
+This is our final visualisation, showing value and discount by genre, with an indication of what that means as a consumer.
+
+```{r}
+# 1. Cleaned Data Analysis
+analisis_genres <- final_table %>%
+  filter(!is.na(metacritic)) %>%
+  group_by(genre) %>%
+  summarise(
+    total_games = n(),
+    avg_metacritic = mean(metacritic),
+    avg_discount = mean(discount_pct)
+  ) %>%
+  filter(total_games > 5) %>%
+  mutate(value_score = avg_metacritic * (avg_discount / 100)) %>% 
+  arrange(desc(value_score))
+
+# 2. Calculate dynamic center points
+mid_x <- mean(analisis_genres$avg_discount, na.rm = TRUE)
+mid_y <- mean(analisis_genres$avg_metacritic, na.rm = TRUE)
+
+# 3. Final Quadrant Plot
+ggplot(analisis_genres, aes(x = avg_discount, y = avg_metacritic)) +
+  # Background Colors
+  annotate("rect", xmin = mid_x, xmax = Inf, ymin = mid_y, ymax = Inf, fill = "green", alpha = 0.07) + 
+  annotate("rect", xmin = -Inf, xmax = mid_x, ymin = mid_y, ymax = Inf, fill = "blue", alpha = 0.07) +  
+  annotate("rect", xmin = mid_x, xmax = Inf, ymin = -Inf, ymax = mid_y, fill = "orange", alpha = 0.07) + 
+  annotate("rect", xmin = -Inf, xmax = mid_x, ymin = -Inf, ymax = mid_y, fill = "red", alpha = 0.07) + 
+
+  # Quadrant Labels
+  annotate("text", x = Inf, y = Inf, label = "BUY NOW\n(High Rating, High Discount)", 
+           hjust = 1.1, vjust = 1.5, fontface = "bold", color = "darkgreen", size = 4) +
+  annotate("text", x = -Inf, y = Inf, label = "IF YOU LOVE THEM\n(High Rating, Low Discount)", 
+           hjust = -0.1, vjust = 1.5, fontface = "bold", color = "darkblue", size = 4) +
+  annotate("text", x = Inf, y = -Inf, label = "STOCKING FILLERS\n(Low Rating, High Discount)", 
+           hjust = 1.1, vjust = -0.5, fontface = "bold", color = "darkorange", size = 4) +
+  annotate("text", x = -Inf, y = -Inf, label = "SKIP\n(Low Rating, Low Discount)", 
+           hjust = -0.1, vjust = -0.5, fontface = "bold", color = "darkred", size = 4) +
+
+  # Reference Lines
+  geom_vline(xintercept = mid_x, linetype = "dashed", color = "gray70") +
+  geom_hline(yintercept = mid_y, linetype = "dashed", color = "gray70") +
+
+  # Data Layers (Points and Genre Names)
+  geom_point(aes(size = total_games), color = "black", alpha = 0.4) +
+  geom_text(aes(label = genre), vjust = -1.2, size = 3.5, fontface = "bold", check_overlap = TRUE) +
+
+  # Styling & Scales
+  scale_size_continuous(range = c(4, 18), name = "Number of Games") +
+  labs(
+    title = "Game Genre Value Analysis",
+    subtitle = paste("Quadrants centered on Avg Discount (", round(mid_x, 1), "%) and Score (", round(mid_y, 1), ")"),
+    x = "Average Discount (%)",
+    y = "Average Metacritic Score"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "bottom"
+  )
+```
+
