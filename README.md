@@ -52,7 +52,6 @@ This project has been consolidated into a single, automated pipeline for ease of
 | :--- | :--- |
 | **`main_analysis.qmd`** | The complete end-to-end script (Scraper + API + Analysis). |
 | **`api_key.txt`** | (User-created) File containing the RAWG credentials. |
-| **`final_data_steam_rawg.csv`** | The final enriched dataset generated after execution. |
 
 ---
 
